@@ -1,0 +1,57 @@
+{
+  "name": "swagger-layer-query",
+  "version": "1.0.0",
+  "description": "Generate type-safe TanStack React Query hooks (useQuery & useMutation) from swagger-layer service.ts files",
+  "type": "module",
+  "bin": {
+    "swagger-layer-query": "dist/bin/swagger-layer-query.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc && chmod +x dist/bin/swagger-layer-query.js",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/swagger-layer-query.test.ts",
+    "prepublishOnly": "npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/muammeroner/swagger-layer-query.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "keywords": [
+    "swagger-layer",
+    "swagger-layer-query",
+    "react-query",
+    "tanstack-query",
+    "swagger",
+    "openapi",
+    "hooks",
+    "typescript",
+    "react",
+    "codegen",
+    "service"
+  ],
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "typescript": "^5.9.3"
+  }
+}
