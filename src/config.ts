@@ -89,7 +89,7 @@ function parseCommaList(value?: string): string[] | undefined {
     .filter(Boolean);
 }
 
-function readJsonObject<T extends Record<string, unknown>>(filePath: string): T {
+function readJsonObject<T extends object = Record<string, unknown>>(filePath: string): T {
   const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
   if (!isPlainObject(parsed)) {
     throw new Error(`Configuration in ${filePath} must be a JSON object`);
@@ -185,38 +185,39 @@ export function resolveConfigFilePath(root: string, explicitConfig?: string): st
   return paths[paths.length - 1];
 }
 
+function assertString(key: keyof SwaggerLayerQueryConfig, value: unknown, nonEmpty = false): void {
+  if (typeof value !== "string" || (nonEmpty && !value.trim())) {
+    throw new Error(`${key} must be a ${nonEmpty ? "non-empty " : ""}string`);
+  }
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
 function validateConfig(config: SwaggerLayerQueryConfig): void {
-  if (typeof config.inputDir !== "string" || !config.inputDir.trim()) {
-    throw new Error("inputDir must be a non-empty string");
-  }
-  if (typeof config.outputDir !== "string" || !config.outputDir.trim()) {
-    throw new Error("outputDir must be a non-empty string");
-  }
-  if (typeof config.hooksSubDir !== "string") {
-    throw new Error("hooksSubDir must be a string");
-  }
-  if (typeof config.fileName !== "string" || !config.fileName.trim()) {
-    throw new Error("fileName must be a non-empty string");
-  }
-  if (typeof config.importAlias !== "string") {
-    throw new Error("importAlias must be a string");
-  }
-  if (typeof config.prefix !== "string") {
-    throw new Error("prefix must be a string");
-  }
-  if (
-    !Array.isArray(config.excludedModules) ||
-    !config.excludedModules.every((x) => typeof x === "string")
-  ) {
+  assertString("inputDir", config.inputDir, true);
+  assertString("outputDir", config.outputDir, true);
+  assertString("hooksSubDir", config.hooksSubDir);
+  assertString("fileName", config.fileName, true);
+  assertString("importAlias", config.importAlias);
+  assertString("prefix", config.prefix);
+
+  if (!isStringArray(config.excludedModules)) {
     throw new Error("excludedModules must be an array of strings");
   }
   if (
-    !Array.isArray(config.queryMethodPrefixes) ||
+    !isStringArray(config.queryMethodPrefixes) ||
     config.queryMethodPrefixes.length === 0 ||
-    !config.queryMethodPrefixes.every((x) => typeof x === "string" && x.trim().length > 0)
+    config.queryMethodPrefixes.some((prefix) => !prefix.trim())
   ) {
     throw new Error("queryMethodPrefixes must be a non-empty array of strings");
   }
+}
+
+/** Returns the first value that is not `undefined` (mirrors a `??` chain). */
+function firstDefined<T>(...values: (T | undefined)[]): T {
+  return values.find((value) => value !== undefined) as T;
 }
 
 export function readConfig(
@@ -229,22 +230,18 @@ export function readConfig(
   let queryConfig: RawSwaggerLayerQueryConfig = {};
 
   for (const configPath of configPaths) {
-    const parsed = readJsonObject<Record<string, unknown>>(configPath) as RawConfigFile &
-      RawSwaggerLayerQueryConfig;
+    const parsed = readJsonObject<RawConfigFile & RawSwaggerLayerQueryConfig>(configPath);
     rootConfig = {
       ...rootConfig,
       ...parsed,
-      ...(isPlainObject(parsed.swaggerLayer) ? (parsed.swaggerLayer as RawSwaggerLayerConfig) : {}),
+      ...(isPlainObject(parsed.swaggerLayer) ? parsed.swaggerLayer : {}),
     };
 
     if (parsed.swaggerLayerQuery !== undefined) {
       if (!isPlainObject(parsed.swaggerLayerQuery)) {
         throw new Error(`"swaggerLayerQuery" configuration in ${configPath} must be a JSON object`);
       }
-      queryConfig = {
-        ...queryConfig,
-        ...(parsed.swaggerLayerQuery as RawSwaggerLayerQueryConfig),
-      };
+      queryConfig = { ...queryConfig, ...parsed.swaggerLayerQuery };
     } else if (args.config) {
       // Allow flat query config when an explicit custom --config file is provided
       queryConfig = { ...queryConfig, ...parsed };
@@ -252,82 +249,83 @@ export function readConfig(
   }
 
   const resolved: SwaggerLayerQueryConfig = {
-    inputDir:
-      args.inputDir ??
-      overrides.inputDir ??
-      queryConfig.inputDir ??
-      queryConfig.dataDir ??
-      queryConfig.servicesDir ??
-      queryConfig.sourceDir ??
-      rootConfig.exportPath ??
-      rootConfig.output ??
-      DEFAULT_CONFIG.inputDir,
-
-    outputDir:
-      args.outputDir ??
-      overrides.outputDir ??
-      queryConfig.outputDir ??
-      queryConfig.featuresDir ??
-      queryConfig.exportPath ??
-      DEFAULT_CONFIG.outputDir,
-
-    hooksSubDir:
-      args.hooksSubDir ??
-      overrides.hooksSubDir ??
-      queryConfig.hooksSubDir ??
-      DEFAULT_CONFIG.hooksSubDir,
-
-    fileName:
-      args.fileName ??
-      overrides.fileName ??
-      queryConfig.fileName ??
-      DEFAULT_CONFIG.fileName,
-
-    importAlias:
-      args.importAlias ??
-      overrides.importAlias ??
-      queryConfig.importAlias ??
-      DEFAULT_CONFIG.importAlias,
-
-    prefix:
-      args.prefix ??
-      overrides.prefix ??
-      queryConfig.prefix ??
-      queryConfig.servicePrefix ??
-      rootConfig.prefix ??
-      rootConfig.servicePrefix ??
-      DEFAULT_CONFIG.prefix,
-
-    useClient:
-      args.useClient ??
-      overrides.useClient ??
-      queryConfig.useClient ??
-      DEFAULT_CONFIG.useClient,
-
-    updateIndexFiles:
-      args.updateIndexFiles ??
-      overrides.updateIndexFiles ??
-      queryConfig.updateIndexFiles ??
-      DEFAULT_CONFIG.updateIndexFiles,
-
-    cleanExcluded:
-      args.cleanExcluded ??
-      overrides.cleanExcluded ??
-      queryConfig.cleanExcluded ??
-      DEFAULT_CONFIG.cleanExcluded,
-
-    excludedModules:
-      parseCommaList(args.exclude) ??
-      overrides.excludedModules ??
-      queryConfig.excludedModules ??
-      rootConfig.excludedModules ??
-      [...DEFAULT_CONFIG.excludedModules],
-
-    queryMethodPrefixes:
-      parseCommaList(args.queryPrefixes) ??
-      overrides.queryMethodPrefixes ??
-      queryConfig.queryMethodPrefixes ??
-      [...DEFAULT_CONFIG.queryMethodPrefixes],
+    inputDir: firstDefined(
+      args.inputDir,
+      overrides.inputDir,
+      queryConfig.inputDir,
+      queryConfig.dataDir,
+      queryConfig.servicesDir,
+      queryConfig.sourceDir,
+      rootConfig.exportPath,
+      rootConfig.output,
+      DEFAULT_CONFIG.inputDir
+    ),
+    outputDir: firstDefined(
+      args.outputDir,
+      overrides.outputDir,
+      queryConfig.outputDir,
+      queryConfig.featuresDir,
+      queryConfig.exportPath,
+      DEFAULT_CONFIG.outputDir
+    ),
+    hooksSubDir: firstDefined(
+      args.hooksSubDir,
+      overrides.hooksSubDir,
+      queryConfig.hooksSubDir,
+      DEFAULT_CONFIG.hooksSubDir
+    ),
+    fileName: firstDefined(
+      args.fileName,
+      overrides.fileName,
+      queryConfig.fileName,
+      DEFAULT_CONFIG.fileName
+    ),
+    importAlias: firstDefined(
+      args.importAlias,
+      overrides.importAlias,
+      queryConfig.importAlias,
+      DEFAULT_CONFIG.importAlias
+    ),
+    prefix: firstDefined(
+      args.prefix,
+      overrides.prefix,
+      queryConfig.prefix,
+      queryConfig.servicePrefix,
+      rootConfig.prefix,
+      rootConfig.servicePrefix,
+      DEFAULT_CONFIG.prefix
+    ),
+    useClient: firstDefined(
+      args.useClient,
+      overrides.useClient,
+      queryConfig.useClient,
+      DEFAULT_CONFIG.useClient
+    ),
+    updateIndexFiles: firstDefined(
+      args.updateIndexFiles,
+      overrides.updateIndexFiles,
+      queryConfig.updateIndexFiles,
+      DEFAULT_CONFIG.updateIndexFiles
+    ),
+    cleanExcluded: firstDefined(
+      args.cleanExcluded,
+      overrides.cleanExcluded,
+      queryConfig.cleanExcluded,
+      DEFAULT_CONFIG.cleanExcluded
+    ),
+    excludedModules: firstDefined(
+      parseCommaList(args.exclude),
+      overrides.excludedModules,
+      queryConfig.excludedModules,
+      rootConfig.excludedModules,
+      [...DEFAULT_CONFIG.excludedModules]
+    ),
+    queryMethodPrefixes: firstDefined(
+      parseCommaList(args.queryPrefixes),
+      overrides.queryMethodPrefixes,
+      queryConfig.queryMethodPrefixes,
+      [...DEFAULT_CONFIG.queryMethodPrefixes]
+    ),
   };
 
   validateConfig(resolved);

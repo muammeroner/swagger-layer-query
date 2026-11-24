@@ -47,6 +47,15 @@ const BUILTIN_TYPE_NAMES = new Set([
 const OPEN_DELIMITERS = new Set(["{", "<", "(", "["]);
 const CLOSE_DELIMITERS = new Set(["}", ">", ")", "]"]);
 const STRING_QUOTES = new Set(['"', "'", "`"]);
+const WHITESPACE = new Set([" ", "\t", "\n", "\r"]);
+const DEFAULT_QUERY_METHOD_PREFIXES = ["get"];
+
+export interface ParseServiceOptions {
+  /** Service class prefix to strip when deriving the tag (e.g. "App") */
+  prefix?: string;
+  /** Method name prefixes (case-insensitive) treated as queries (default: ["get"]) */
+  queryMethodPrefixes?: string[];
+}
 
 export interface AvailableTypeSymbols {
   typesFilePath: string | null;
@@ -88,8 +97,7 @@ function skipComment(src: string, start: number): number {
 function skipWhitespaceAndComments(src: string, start: number): number {
   let i = start;
   while (i < src.length) {
-    const ch = src[i];
-    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+    if (WHITESPACE.has(src[i])) {
       i++;
       continue;
     }
@@ -140,52 +148,47 @@ function findMatchingDelimiter(
   return -1;
 }
 
-function findTopLevelIndex(
-  src: string,
-  predicate: (ch: string, index: number, text: string) => boolean
-): number {
+/**
+ * Walks `src` while tracking bracket depth and skipping string literals.
+ * Calls `visit` for every character at depth 0; stops early when it returns `true`.
+ * Returns the index where `visit` stopped, or -1 when the end was reached.
+ */
+function scanTopLevel(src: string, visit: (ch: string, index: number) => boolean | void): number {
   let depth = 0;
   for (let i = 0; i < src.length; i++) {
     const ch = src[i];
     if (STRING_QUOTES.has(ch)) {
       i = skipStringLiteral(src, i) - 1;
-      continue;
-    }
-    if (OPEN_DELIMITERS.has(ch)) {
+    } else if (OPEN_DELIMITERS.has(ch)) {
       depth++;
     } else if (CLOSE_DELIMITERS.has(ch)) {
       depth--;
-    } else if (depth === 0 && predicate(ch, i, src)) {
+    } else if (depth === 0 && visit(ch, i)) {
       return i;
     }
   }
   return -1;
 }
 
+function findTopLevelIndex(src: string, predicate: (ch: string, index: number) => boolean): number {
+  return scanTopLevel(src, predicate);
+}
+
 function splitTopLevel(src: string, separator: string): string[] {
   const parts: string[] = [];
   let start = 0;
-  let depth = 0;
+  const pushPart = (end: number): void => {
+    const slice = src.slice(start, end).trim();
+    if (slice) parts.push(slice);
+  };
 
-  for (let i = 0; i < src.length; i++) {
-    const ch = src[i];
-    if (STRING_QUOTES.has(ch)) {
-      i = skipStringLiteral(src, i) - 1;
-      continue;
-    }
-    if (OPEN_DELIMITERS.has(ch)) {
-      depth++;
-    } else if (CLOSE_DELIMITERS.has(ch)) {
-      depth--;
-    } else if (depth === 0 && ch === separator) {
-      const slice = src.slice(start, i).trim();
-      if (slice) parts.push(slice);
+  scanTopLevel(src, (ch, i) => {
+    if (ch === separator) {
+      pushPart(i);
       start = i + 1;
     }
-  }
-
-  const tail = src.slice(start).trim();
-  if (tail) parts.push(tail);
+  });
+  pushPart(src.length);
   return parts;
 }
 
@@ -207,7 +210,7 @@ function parseSingleParam(raw: string): ParsedMethodParam {
   const rawTypePart = cleaned.slice(colonIdx + 1).trim();
   const defaultIdx = findTopLevelIndex(
     rawTypePart,
-    (ch, idx, text) => ch === "=" && text[idx + 1] !== ">" && text[idx - 1] !== "="
+    (ch, idx) => ch === "=" && rawTypePart[idx + 1] !== ">" && rawTypePart[idx - 1] !== "="
   );
 
   const hasDefault = defaultIdx !== -1;
@@ -292,14 +295,14 @@ function parsePromiseReturnType(
 export function parseServiceContent(
   content: string,
   moduleSlug: string,
-  options: { prefix?: string; queryMethodPrefixes?: string[] } = {}
+  options: ParseServiceOptions = {}
 ): ParsedServiceModule | null {
   const extracted = extractServiceClassBody(content);
   if (!extracted) return null;
 
   const queryMethodPrefixes = options.queryMethodPrefixes?.length
     ? options.queryMethodPrefixes
-    : ["get"];
+    : DEFAULT_QUERY_METHOD_PREFIXES;
 
   const { serviceClassName, body } = extracted;
   const methods: ParsedServiceMethod[] = [];
@@ -396,7 +399,7 @@ export function parseServiceContent(
 export function parseServiceFile(
   servicePath: string,
   moduleSlug: string,
-  options: { prefix?: string; queryMethodPrefixes?: string[] } = {}
+  options: ParseServiceOptions = {}
 ): ParsedServiceModule | null {
   if (!fs.existsSync(servicePath)) return null;
   return parseServiceContent(fs.readFileSync(servicePath, "utf8"), moduleSlug, options);
@@ -426,18 +429,17 @@ function extractExportedTypeNames(filePath: string): Set<string> {
   return names;
 }
 
+function firstExistingPath(...candidates: string[]): string | null {
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
 export function discoverAvailableTypeSymbols(inputDir: string): AvailableTypeSymbols {
-  const typesCandidate = path.join(inputDir, "types.ts");
-  const legacyInterfacesCandidate = path.join(inputDir, "interfaces.ts");
-  const enumsCandidate = path.join(inputDir, "enums.ts");
-
-  const typesFilePath = fs.existsSync(typesCandidate)
-    ? typesCandidate
-    : fs.existsSync(legacyInterfacesCandidate)
-      ? legacyInterfacesCandidate
-      : null;
-
-  const enumsFilePath = fs.existsSync(enumsCandidate) ? enumsCandidate : null;
+  // `interfaces.ts` is the legacy name for `types.ts`
+  const typesFilePath = firstExistingPath(
+    path.join(inputDir, "types.ts"),
+    path.join(inputDir, "interfaces.ts")
+  );
+  const enumsFilePath = firstExistingPath(path.join(inputDir, "enums.ts"));
 
   return {
     typesFilePath,

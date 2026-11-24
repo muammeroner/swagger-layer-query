@@ -1,6 +1,6 @@
 {
   "name": "swagger-layer-query",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Generate type-safe TanStack React Query hooks (useQuery & useMutation) from swagger-layer service.ts files",
   "type": "module",
   "bin": {

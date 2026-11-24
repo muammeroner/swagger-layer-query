@@ -42,7 +42,7 @@ interface Logger {
 
 function createLogger(silent?: boolean): Logger {
   if (silent) {
-    return { log: () => {}, warn: () => {} };
+    return { log: () => { }, warn: () => { } };
   }
   return {
     log: (...args: unknown[]) => console.log(...args),
@@ -102,6 +102,26 @@ function renderReactQueryImport(hasQueries: boolean, hasMutations: boolean): str
   return `import { useMutation, type UseMutationOptions } from "@tanstack/react-query";`;
 }
 
+function renderTypeImport(symbols: string[], importPath: string | null): string | null {
+  if (symbols.length === 0 || !importPath) return null;
+  return `import type { ${symbols.join(", ")} } from ${JSON.stringify(importPath)};`;
+}
+
+function hasOnlyOptionalParams(method: ParsedServiceMethod): boolean {
+  return method.params.every((p) => p.optional);
+}
+
+/** `args: FooArgs` or `args?: FooArgs` when every param is optional */
+function renderArgsParam(method: ParsedServiceMethod): string {
+  const optionalMark = hasOnlyOptionalParams(method) ? "?" : "";
+  return `args${optionalMark}: ${method.pascalFnName}Args`;
+}
+
+/** Spreads the args object back into positional service call arguments */
+function renderCallArgs(method: ParsedServiceMethod, source: string): string {
+  return method.params.map((p) => `${source}.${p.name}`).join(", ");
+}
+
 function renderArgsType(method: ParsedServiceMethod): string {
   if (method.params.length === 0) {
     return `export type ${method.pascalFnName}Args = void;`;
@@ -112,12 +132,10 @@ function renderArgsType(method: ParsedServiceMethod): string {
 
 function renderQueryKeys(camelTag: string, queryMethods: ParsedServiceMethod[]): string {
   const entries = queryMethods.map((q) => {
-    if (q.params.length === 0) {
-      return `  ${q.fnName}: () => [...${camelTag}QueryKeys.all, ${JSON.stringify(q.fnName)}] as const,`;
-    }
-    const allOptional = q.params.every((p) => p.optional);
-    const argsParam = allOptional ? `args?: ${q.pascalFnName}Args` : `args: ${q.pascalFnName}Args`;
-    return `  ${q.fnName}: (${argsParam}) => [...${camelTag}QueryKeys.all, ${JSON.stringify(q.fnName)}, args] as const,`;
+    const keyBase = `...${camelTag}QueryKeys.all, ${JSON.stringify(q.fnName)}`;
+    return q.params.length === 0
+      ? `  ${q.fnName}: () => [${keyBase}] as const,`
+      : `  ${q.fnName}: (${renderArgsParam(q)}) => [${keyBase}, args] as const,`;
   });
 
   return [
@@ -129,81 +147,54 @@ function renderQueryKeys(camelTag: string, queryMethods: ParsedServiceMethod[]):
 }
 
 function renderQueryHook(camelTag: string, q: ParsedServiceMethod): string {
-  const optionsParam = `options?: Omit<UseQueryOptions<${q.returnType}, Error>, "queryKey" | "queryFn">`;
-
-  if (q.params.length === 0) {
-    return [
-      `export function use${q.pascalFnName}Query(`,
-      `  ${optionsParam}`,
-      `) {`,
-      `  return useQuery({`,
-      `    queryKey: ${camelTag}QueryKeys.${q.fnName}(),`,
-      `    queryFn: () => service.${q.fnName}(),`,
-      `    ...options,`,
-      `  });`,
-      `}`,
-    ].join("\n");
-  }
-
-  const allOptional = q.params.every((p) => p.optional);
-  const argsParam = allOptional ? `args?: ${q.pascalFnName}Args` : `args: ${q.pascalFnName}Args`;
-  const callArgs = q.params
-    .map((p) => (allOptional ? `args?.${p.name}` : `args.${p.name}`))
-    .join(", ");
+  const hasParams = q.params.length > 0;
+  const argsSource = hasOnlyOptionalParams(q) ? "args?" : "args";
+  const signatureParams = [
+    ...(hasParams ? [`  ${renderArgsParam(q)},`] : []),
+    `  options?: Omit<UseQueryOptions<${q.returnType}, Error>, "queryKey" | "queryFn">`,
+  ];
 
   return [
     `export function use${q.pascalFnName}Query(`,
-    `  ${argsParam},`,
-    `  ${optionsParam}`,
+    ...signatureParams,
     `) {`,
     `  return useQuery({`,
-    `    queryKey: ${camelTag}QueryKeys.${q.fnName}(args),`,
-    `    queryFn: () => service.${q.fnName}(${callArgs}),`,
+    `    queryKey: ${camelTag}QueryKeys.${q.fnName}(${hasParams ? "args" : ""}),`,
+    `    queryFn: () => service.${q.fnName}(${hasParams ? renderCallArgs(q, argsSource) : ""}),`,
     `    ...options,`,
     `  });`,
     `}`,
   ].join("\n");
 }
 
-function renderMutationHook(m: ParsedServiceMethod): string {
+function renderMutationFn(m: ParsedServiceMethod): string[] {
   if (m.params.length === 0) {
-    return [
-      `export function use${m.pascalFnName}Mutation(`,
-      `  options?: UseMutationOptions<${m.returnType}, Error, ${m.pascalFnName}Args>`,
-      `) {`,
-      `  return useMutation({`,
-      `    mutationFn: () => service.${m.fnName}(),`,
-      `    ...options,`,
-      `  });`,
-      `}`,
-    ].join("\n");
+    return [`    mutationFn: () => service.${m.fnName}(),`];
   }
-
-  const allOptional = m.params.every((p) => p.optional);
-  if (allOptional) {
-    const callArgs = m.params.map((p) => `resolved?.${p.name}`).join(", ");
+  if (hasOnlyOptionalParams(m)) {
     return [
-      `export function use${m.pascalFnName}Mutation(`,
-      `  options?: UseMutationOptions<${m.returnType}, Error, ${m.pascalFnName}Args | void>`,
-      `) {`,
-      `  return useMutation({`,
       `    mutationFn: (args: ${m.pascalFnName}Args | void) => {`,
       `      const resolved = args ? args : undefined;`,
-      `      return service.${m.fnName}(${callArgs});`,
+      `      return service.${m.fnName}(${renderCallArgs(m, "resolved?")});`,
       `    },`,
-      `    ...options,`,
-      `  });`,
-      `}`,
-    ].join("\n");
+    ];
   }
+  return [
+    `    mutationFn: (args: ${m.pascalFnName}Args) => service.${m.fnName}(${renderCallArgs(m, "args")}),`,
+  ];
+}
 
-  const callArgs = m.params.map((p) => `args.${p.name}`).join(", ");
+function renderMutationHook(m: ParsedServiceMethod): string {
+  // When all params are optional the hook can be called with no variables at all
+  const acceptsVoid = m.params.length > 0 && hasOnlyOptionalParams(m);
+  const variablesType = `${m.pascalFnName}Args${acceptsVoid ? " | void" : ""}`;
+
   return [
     `export function use${m.pascalFnName}Mutation(`,
-    `  options?: UseMutationOptions<${m.returnType}, Error, ${m.pascalFnName}Args>`,
+    `  options?: UseMutationOptions<${m.returnType}, Error, ${variablesType}>`,
     `) {`,
     `  return useMutation({`,
-    `    mutationFn: (args: ${m.pascalFnName}Args) => service.${m.fnName}(${callArgs}),`,
+    ...renderMutationFn(m),
     `    ...options,`,
     `  });`,
     `}`,
@@ -237,40 +228,20 @@ export function generateHooksCode(params: GenerateHooksCodeParams): string {
     `import { ${serviceClassName} } from ${JSON.stringify(serviceImportPath)};`,
   ];
 
-  if (sortedEnums.length > 0 && enumsImportPath) {
-    headerLines.push(
-      `import type { ${sortedEnums.join(", ")} } from ${JSON.stringify(enumsImportPath)};`
-    );
-  }
-  if (sortedTypes.length > 0 && typesImportPath) {
-    headerLines.push(
-      `import type { ${sortedTypes.join(", ")} } from ${JSON.stringify(typesImportPath)};`
-    );
-  }
+  const enumsImport = renderTypeImport(sortedEnums, enumsImportPath);
+  const typesImport = renderTypeImport(sortedTypes, typesImportPath);
+  if (enumsImport) headerLines.push(enumsImport);
+  if (typesImport) headerLines.push(typesImport);
 
-  const blocks: string[] = [];
-  if (useClient) {
-    blocks.push(`"use client";`);
-  }
-
-  blocks.push(headerLines.join("\n"));
-  blocks.push(`const service = new ${serviceClassName}();`);
-
-  for (const method of methods) {
-    blocks.push(renderArgsType(method));
-  }
-
-  if (queryMethods.length > 0) {
-    blocks.push(renderQueryKeys(camelTag, queryMethods));
-  }
-
-  for (const query of queryMethods) {
-    blocks.push(renderQueryHook(camelTag, query));
-  }
-
-  for (const mutation of mutationMethods) {
-    blocks.push(renderMutationHook(mutation));
-  }
+  const blocks = [
+    ...(useClient ? [`"use client";`] : []),
+    headerLines.join("\n"),
+    `const service = new ${serviceClassName}();`,
+    ...methods.map(renderArgsType),
+    ...(queryMethods.length > 0 ? [renderQueryKeys(camelTag, queryMethods)] : []),
+    ...queryMethods.map((q) => renderQueryHook(camelTag, q)),
+    ...mutationMethods.map(renderMutationHook),
+  ];
 
   return blocks.join("\n\n") + "\n";
 }
@@ -317,16 +288,18 @@ function updateBarrelExports(
   }
 }
 
+export interface ModuleGenerateContext {
+  root: string;
+  inputDir: string;
+  outputDir: string;
+  config: SwaggerLayerQueryConfig;
+  availableSymbols?: AvailableTypeSymbols;
+  silent?: boolean;
+}
+
 export function generateQueriesForModule(
   moduleSlug: string,
-  context: {
-    root: string;
-    inputDir: string;
-    outputDir: string;
-    config: SwaggerLayerQueryConfig;
-    availableSymbols?: AvailableTypeSymbols;
-    silent?: boolean;
-  }
+  context: ModuleGenerateContext
 ): ModuleGenerateResult | null {
   const { root, inputDir, outputDir, config, silent } = context;
   const logger = createLogger(silent);
@@ -364,7 +337,7 @@ export function generateQueriesForModule(
 
   const code = generateHooksCode({
     parsed,
-    serviceImportPath: toImport(path.join(inputDir, moduleSlug, "service.ts")),
+    serviceImportPath: toImport(servicePath),
     typesImportPath: availableSymbols.typesFilePath ? toImport(availableSymbols.typesFilePath) : null,
     enumsImportPath: availableSymbols.enumsFilePath ? toImport(availableSymbols.enumsFilePath) : null,
     sourceLabel: toPosixPath(path.relative(root, servicePath)),
@@ -380,21 +353,29 @@ export function generateQueriesForModule(
     updateBarrelExports(targetDir, featureDir, trimmedSubDir, config.fileName);
   }
 
+  const hookCount = parsed.methods.length;
   const queryCount = parsed.methods.filter((m) => m.isQuery).length;
-  const mutationCount = parsed.methods.length - queryCount;
+  const mutationCount = hookCount - queryCount;
 
   logger.log(
-    `✓ Generated ${toPosixPath(path.relative(root, outputFilePath))} (${parsed.methods.length} hooks: ${queryCount} queries, ${mutationCount} mutations)`
+    `✓ Generated ${toPosixPath(path.relative(root, outputFilePath))} (${hookCount} hooks: ${queryCount} queries, ${mutationCount} mutations)`
   );
 
   return {
     moduleSlug,
     serviceClassName: parsed.serviceClassName,
     outputFilePath,
-    hookCount: parsed.methods.length,
+    hookCount,
     queryCount,
     mutationCount,
   };
+}
+
+function removeDirIfOnlyContains(dir: string, allowedEntries: string[]): void {
+  if (!fs.existsSync(dir)) return;
+  if (fs.readdirSync(dir).every((entry) => allowedEntries.includes(entry))) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function cleanupExcludedHooks(
@@ -425,18 +406,22 @@ function cleanupExcludedHooks(
       `✓ Removed query hooks for excluded feature: ${toPosixPath(path.relative(root, hooksFile))}`
     );
 
-    if (trimmedSubDir && fs.existsSync(targetDir)) {
-      const remaining = fs.readdirSync(targetDir);
-      if (remaining.length === 0 || (remaining.length === 1 && remaining[0] === "index.ts")) {
-        fs.rmSync(targetDir, { recursive: true, force: true });
-      }
+    // Drop the hooks subdir if only its barrel is left, then the feature dir if it is empty
+    if (trimmedSubDir) {
+      removeDirIfOnlyContains(targetDir, ["index.ts"]);
     }
-    if (fs.existsSync(featureDir) && fs.readdirSync(featureDir).length === 0) {
-      fs.rmSync(featureDir, { recursive: true, force: true });
-    }
+    removeDirIfOnlyContains(featureDir, []);
   }
 
   return removed;
+}
+
+function formatModuleNotFound(targetName: string, inputDir: string, available: string[]): string {
+  const availableList =
+    available.length > 0
+      ? available.map((m) => `  - ${m}`).join("\n")
+      : "  (no modules with service.ts found)";
+  return `Feature "${targetName}" was not found under "${inputDir}".\nAvailable features:\n${availableList}`;
 }
 
 export async function generateQueries(
@@ -455,7 +440,7 @@ export async function generateQueries(
   const inputDir = path.resolve(root, config.inputDir);
   const outputDir = path.resolve(root, config.outputDir);
 
-  logger.log(`=== [swagger-layer-query] Generating React Query Hooks ===`);
+  logger.log(`Swagger Layer Query - Generating React Query Hooks`);
   logger.log(`Config File  : ${configPath || "(default)"}`);
   logger.log(`Input Dir    : ${config.inputDir}`);
   logger.log(`Output Dir   : ${config.outputDir}`);
@@ -476,13 +461,7 @@ export async function generateQueries(
 
     const resolved = resolveModule(targetName, available);
     if (!resolved) {
-      const availableList =
-        available.length > 0
-          ? available.map((m) => `  - ${m}`).join("\n")
-          : "  (no modules with service.ts found)";
-      throw new Error(
-        `Feature "${targetName}" was not found under "${config.inputDir}".\nAvailable features:\n${availableList}`
-      );
+      throw new Error(formatModuleNotFound(targetName, config.inputDir, available));
     }
 
     logger.log(
@@ -505,7 +484,7 @@ export async function generateQueries(
     logger.log(`Generated React Query hooks for ${modules.length} feature(s).`);
   }
 
-  logger.log(`=== [swagger-layer-query] Query Generation Complete ===\n`);
+  logger.log(`Swagger Layer Query - Generation Complete`);
 
   return {
     config,
